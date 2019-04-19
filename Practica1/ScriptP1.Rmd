@@ -1,0 +1,351 @@
+---
+title: "Memoria de la práctica 1"
+author: "Adrián de la Torre Rodríguez"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+html_notebook: default
+---
+
+
+**Índice**
+
+* [Lectura de datos](#Lectura de datos)
+* [Limpieza de datos](#Limpieza de datos)
+* [Tratamiento de Outliers](#Tratamiento de Outliers)
+* [Normalizar datos](#Normalizar datos)
+* [Estudio de correlaciones](#Estudio de correlaciones)
+* [Downsampling](#Downsampling)
+* [Predicción](#Predicción)
+* [Discusión de resultados](#Discusión de resultados)
+* [Conclusiones](#Conclusiones)
+* [Bibliografía](#Bibliografía)
+
+
+## Lectura de datos<a name="Lectura de datos"></a>
+Para leer los datos vamos a usar la librería ```tidyverse``` y para observar algunas características de los datos vamos a usar la librería ```funModeling```. Podemos observar que tenemos un conjunto de datos con 200000 filas y 202 variables todas de tipo numérico salvo el ID de la fila.
+
+En cuanto a la calidad del conjunto de datos; el porcentaje de ceros de cada variable es nulo o casi nulo al igual que los valores perdidos. Por lo tanto no habrá que realizar mucha limpieza de datos.
+```{r}
+library(tidyverse)
+library(funModeling)
+data_raw <- read_csv('train_ok.csv')
+dim(data_raw)
+df_status(data_raw)
+```
+## Limpieza de datos <a name="Limpieza de datos"></a>
+Como los datos perdidos representan un porcentaje mínimo, se va a proceder a eliminar las filas que los contienen. Se ha optado por este método ya que reemplazarlos por la media usando el método *mice* de la librería ```mice``` tardaba demasiado tiempo.
+
+Al eliminar las filas con valores perdidos observamos que tanto en el conjunto de datos de filas con valores perdidos y el conjunto de datos limpio, la proporción de la variable *target* es similiar. Al tener la misma proporción, no surge ningún problema de desbalanceo de clases.
+
+Observamos que ahora ninguna variable contiene datos perdidos y que se han eliminado en total 3959 filas lo que representa el 1.9795% de los datos originales.
+
+```{r}
+# el método na.omit elimina las filas con valores perdidos
+data_nona <- na.omit(data_raw)
+# Guardamos las filas con valores perdidos para compararlas con el dataset limpio
+data_dirty <- data_raw[rowSums(is.na(data_raw)) > 0,]
+# Vemos la proporicion de la variable target
+prop.table(table(data_dirty$target))
+prop.table(table(data_nona$target))
+# Estadísticas del conjunto de datos nuevo
+df_status(data_nona)
+# Calculamos el número de filas eliminadas
+deleted_rows <- dim(data_raw) - dim(data_nona)
+deleted_rows
+# Calculamos el porcentaje
+deleted_rows * 100 / dim(data_raw)
+```
+
+Una vez tratadas las filas con valores perdidos vamos a eliminar las columnas cuya diversidad en sus valores sea muy alta o muy baja. Finalmente de 202 variables nos quedamos con 171.
+```{r}
+
+data_clean <- data_nona
+
+status <- df_status(data_clean)
+
+# Calculamos las columnas con valores diferentes
+dif_cols <- status %>%
+  filter(unique > 0.9 * nrow(data_clean)) %>%
+  select(variable)
+
+# Calculamos las columnas con valores iguales
+eq_cols <- status %>%
+  filter(unique < 0.2 * nrow(data_clean)) %>%
+  select(variable)
+
+# Eliminamos las columnas
+remove_cols <- bind_rows(
+  list(eq_cols, dif_cols)
+)
+data_clean <- data_clean %>%
+  select(-one_of(remove_cols$variable))
+
+data_clean$ID_code = data_nona$ID_code
+data_clean$target = data_nona $ target
+
+```
+
+
+## Tratamiento de Outliers <a name="Tratamiento de Outliers"></a>
+
+En este apartado vamos a tratar con los Outliers, los outliers son elementos que se consideran muy separados de la mayoría de valores de su variable. Se considera outlier si el valor excede 1.5*IQR de la variable.
+
+Para tratar con estos datos se han calculado los cuantiles 25 y 75 para ver los datos que están por debajo y por encima respectivamente. Y los cuantiles 5 y 95 para calcular el valor para asignar a los outliers. A continuación se calcula el rango para considerar si un valor es outlier y se le aplica a todos los outliers los valores nuevos calculados.
+
+Se puede observar que en algunas variables se ha reducido el número de valores únicos lo que significa que los outliers han sido reemplazados por otros valores que ya aparecían en el data set, concretamente con los de los percentiles 5 y 95 de las variables.
+
+Para comprobar el funcionamiento de este método vamos a usar graficos *boxplot* que muestran los outliers.  Observamos que para *var_0* se han eliminado todos los outliers
+
+[Fuente](http://r-statistics.co/Outlier-Treatment-With-R.html)
+
+```{r}
+# Guardamos los datos en otra variable
+data_capped <- data_clean[c(-170,-171)]
+# Mostramos el estado del data set antes del proceso
+df_status(data_capped)
+# Variable para el índe de columna
+i <- 1
+# Para cada columna del data set...
+for (col in data_capped){
+  # Calculamos los cuantiles 25 y 75
+  qnt <- quantile(col, probs=c(.25, .75), na.rm = T)
+  # Calculamos los cuantiles 5 y 95 que serán los nuevos valores de los outliers
+  caps <- quantile(col, probs=c(.05, .95), na.rm = T)
+  # H es lo máximo que puede variar un valor del percientil 25 por debajo y 75 por encima. Se calcula usando el rango intercuantil de la variable
+  H <- 1.5 * IQR(col, na.rm = T)
+  # Todos los valores de la columna que superen ese rango H se actualizan por los valores nuevos
+  col[col < (qnt[1] - H)] <- caps[1]
+  col[col > (qnt[2] + H)] <- caps[2]
+  # Actualizamos la columna del data set
+  data_capped[i] <- col
+  # Aumentamos el índice de la columna
+  i <- i + 1
+}
+# Mostramos de nuevo el conjunto de datos
+df_status(data_capped)
+
+# Añadimos de nuevo el id y el target
+data_capped$ID_code = data_clean$ID_code
+data_capped$target = data_clean$target
+
+# Mostramos los boxplot de var_0 antes y después del método
+boxplot(data_clean$var_0)
+boxplot(data_capped$var_0)
+```
+
+
+## Normalizar datos <a name="Normalizar datos"></a>
+
+En este apartado vamos a normalizar los datos, es decir transformar los rangos de sus variables al intervalo [0,1] donde cero sería el mínimo valor que toma la variable antes de ser normalizada y 1 el máximo. Hacemos esta normalización para igualar los rangos en que se mueven las variables para facilitar visualizar la relación entre ellas.
+
+Vamos a usar la librería ```BBmisc``` y la función *normalize* con el método range que por defecto normaliza al rango [0,1]
+
+```{r}
+library(BBmisc)
+data_normalized <- normalize(data_capped, method = "range")
+glimpse(data_normalized)
+```
+
+
+
+
+## Estudio de correlaciones <a name="Estudio de correlaciones"></a>
+
+En esta sección vamos estudiar la correlación entre las variables, es decir, si existe alguna dependencia directa o inversa entre algún par de variables. El objetivo es eliminar variables que tengan una alta dependencia de otra ya que no aportan información al conjunto de datos.
+
+Para estudiar la correlación vamos a usar la librería ```corrplot``` la cual nos permite visualizarla gráficamente. Tras ver el diagrama siguiente podemos observar que no hay ninguna correlación entre ningún par de variables. Por otro lado se puede observar que hay una correlación máxima entre una variable y sí misma lo que es trivial pero nos demuestra que el método funciona.
+
+Aun así, como tenemos demasiadas variables vamos a eliminar las que tengan una correlacion con la variable *target* menor que el 0.02. Despues de esto nos quedamos con 116 variables.
+```{r}
+# Librería corrplot para dibujar la matrix de correlaciones
+library(corrplot)
+# Eliminamos las variables que no son numéricas (id)
+data_correlation <- data_normalized[c(-170,-171)]
+# Creamos la matriz de correlación de los datos
+correlation_table <- cor(data_correlation)
+# Dibujamos la matriz con el método de color y con el tamaño de las etiquetas a 0.1 ya que son demasiadas y aparecían solapadas
+corrplot(correlation_table, method = "color",tl.cex = 0.1)
+# Vemos la correlación de las variables con target
+cor_target <- correlation_table(data_normalized, target='target')
+# Nos quedamos con las variables con una correlación con target mayor que el 0.02
+important_vars <- cor_target %>% 
+  filter(abs(target) >= 0.02)
+# Creamos el data set listo para usarlo en la predicción con las variables más importantes
+data_important <- data_normalized %>%
+  select(one_of(important_vars$Variable))
+
+# Vemos el nuevo tamaño de los datos
+dim(data_important)
+```
+
+## Downsampling <a name="Downsampling"></a>
+
+Debido a la cantidad enorme de datos y a disponer de una máquina no muy potente se ha optado por reducir las muestras de la clase mayoritaria para poder crear un modelo de predicción en un tiempo razonable aunque se pierda precisión. Además se balancearán las clases lo que será una ventaja a la hora del entrenamiento del modelo de predicción.
+
+Se va a usar la técnica de *downsampling* que hace justo lo que he comentado. Se establece una semilla para la selección aleatoria de R y despues se eliminan aleatoriamente filas de la clase mayoritaria hasta tener el mismo número de clases.
+
+Vemos que en el nuevo conjunto de datos hay el mismo número de filas en cada clase.
+
+
+```{r}
+library(caret)
+# Establecemos la semilla
+set.seed(9560)
+# Cambiamos la variable target a tipo factor
+data_downsampled <- data_important %>%
+  mutate(target = as.factor(ifelse(target == 1, 'Yes', 'No')))
+
+# Hacemos downsamplin para igualar el número de filas pertenecientes a cada clase
+predictors <- select(data_downsampled, -target)
+data_downsampled <- downSample(x = predictors, y = data_downsampled$target, yname = 'target')
+# Vemos la cantidad de elementos en cada clase
+count(data_downsampled, target)
+
+# Nueva variable para la predicción
+data_ready <- data_downsampled
+```
+
+
+
+
+
+## Predicción <a name="Predicción"></a>
+
+Una vez tenemos los datos preparados se va a proceder a usar distintos modelos de predicción para, en base a las variables de cada fila, intentar predecir la variable *target*. En primer lugar vamos a usar **random forest** que es una combinación de árboles predictores tal que cada árbol depende de los valores de un vector aleatorio probado independientemente y con la misma distribución para cada uno de estos. [Fuente](https://es.wikipedia.org/wiki/Random_forest).
+
+Para ello vamos a usar una función proporcionada en el siguiente [GitHub](https://github.com/jgromero/sige2019) que envuelve la función de entrenamiento del paquete *caret*. El primer paso es barajar aleatoriamente el conjunto de datos y despues dividir los datos en un conjunto de entrenamiento y otro de validación en una proporción de 70% y 30% respectivamente. A continuación entrenamos el *random forest* con el conjunto de entrenamiento y al terminar probamos el modelo prediciendo en el conjunto de datos de validación. Para comprobar su precisión se va a usar la curva ROC que representa gráficamente la cantidad de aciertos al variar un umbral de discriminación. La precisión se mide con el área que se encuentra debajo de esta curva ROC, cuanto más cercana sea a 1 mejor será la precisión.
+
+En este caso hemos obtenido una precisión del 0.98.
+```{r}
+library(caret)
+library(spatstat)
+library(pROC)
+
+# Función para entrenar sobre un conjunto de datos con el método de random forest
+trainRF <- function(train_data, rfCtrl = NULL, rfParametersGrid = NULL) {
+  if(is.null(rfCtrl)) {
+    rfCtrl <- trainControl(
+      verboseIter = T, 
+      classProbs = TRUE, 
+      method = "repeatedcv", 
+      number = 10, 
+      repeats = 1, 
+      summaryFunction = twoClassSummary)    
+  }
+  if(is.null(rfParametersGrid)) {
+    rfParametersGrid <- expand.grid(
+      .mtry = c(sqrt(ncol(train_data)))) 
+  }
+  
+  rfModel <- train(
+    target ~ ., 
+    data = train_data, 
+    method = "rf", 
+    metric = "ROC", 
+    trControl = rfCtrl, 
+    tuneGrid = rfParametersGrid)
+  
+  return(rfModel)
+}
+
+# Barajamos aleatoriamente los datos
+data_ready <- data_ready[sample(1:nrow(data_ready)), ]
+# Creamos un conjunto de índices aleatorios cuyo cardinal es el 70% del total del conjunto de datos
+trainIndex <- createDataPartition(data_ready$target, p = .7, list = FALSE, times = 1)
+# Usando esos índices creamos el conjunto de entrenamiento
+data_train <- data_ready[trainIndex,]
+# Creamos el conjunto de validación usando los índices que no están en trainIndex
+data_val <- data_ready[-trainIndex,]
+
+
+# Entrenamos el modelo con la función anterior
+# rfModel <- trainRF(data_train)
+# Guardamos el modelo para poder usarlo posteriormente
+# saveRDS(rfModel, file = "model1.rds")
+# Leemos el modelo
+rfModel <- readRDS("model1.rds")
+
+# Realizamos una predicción sobre el conjunto de validación
+predictionValidationProb <- predict(rfModel, data_val, type = "prob")
+
+# Medimos la precisión del modelo usando la curva ROC
+auc <- roc(data_val$target, predictionValidationProb[["Yes"]], levels = unique(data_val[["target"]]))
+# Dibujamos la curva ROC
+roc_validation <- plot.roc(auc, ylim=c(0,1), type = "S" , print.thres = T, main=paste('Validation AUC:', round(auc$auc[[1]], 2)))
+```
+
+Ahora vamos a usar el método **boosted tree**, que resumidamente consiste en computar una secuencia de árboles muy sumples, donde cada árbol sucesivo es construido con los residuos de la predicción del árbol predecesor([Fuente](http://www.statsoft.com/Textbook/Boosting-Trees-Regression-Classification))
+
+En este caso podemos observar que hemos obtenido peores resultados con un 0.82 de precisión.
+
+```{r}
+# Función para entrenar sobre un conjunto de datos con el método de boosted tree
+trainBT <- function(train_data, btCtrl = NULL, btParametersGrid = NULL) {
+  if(is.null(btCtrl)) {
+    btCtrl <- trainControl(
+      verboseIter = T, 
+      method = "repeatedcv", 
+      number = 10, 
+      repeats = 1)    
+  }
+  if(is.null(btParametersGrid)) {
+    btParametersGrid <- expand.grid(
+      .mtry = c(sqrt(ncol(train_data)))) 
+  }
+  
+  btModel <- train(
+    target ~ ., 
+    data = train_data, 
+    method = "gbm", 
+    trControl = btCtrl,
+    verbose = FALSE)
+  
+  return(btModel)
+}
+
+
+# Entrenamos el modelo con la función anterior
+# btModel <- trainBT(data_train)
+# Guardamos el modelo para poder usarlo posteriormente
+# saveRDS(btModel, file = "model2.rds")
+# Leemos el modelo
+btModel <- readRDS("model2.rds")
+
+# Realizamos una predicción sobre el conjunto de validación
+predictionValidationProb <- predict(btModel, data_val, type = "prob")
+
+# Medimos la precisión del modelo usando la curva ROC
+auc <- roc(data_val$target, predictionValidationProb[["Yes"]], levels = unique(data_val[["target"]]))
+# Dibujamos la curva ROC
+roc_validation <- plot.roc(auc, ylim=c(0,1), type = "S" , print.thres = T, main=paste('Validation AUC:', round(auc$auc[[1]], 2)))
+```
+
+
+## Discusión de resultados <a name="Discusión de resultados"></a>
+
+Tras usar dos métodos de predicción (*random forest* y *boosted tree*) observamos que el mejor resultado lo obtiene el random forest con un 0.98 de precisión. Esto es un muy buen resultado ya que ha acertado casi el 100% de los casos. Si ademas tenemos en cuenta de que se trataba de un conjunto de datos balanceados 50/50 el resultado es aún mas prometedor.
+
+Si recordamos, en los datos originales, en torno al 90% de muestras pertenecían a la clase 0. Por lo tanto hemos obtenido un modelo más preciso que si hubiéramos creado uno en el cuál siempre predijera 0 (obtendría un 0.9 de precisión)
+
+
+## Conclusiones <a name="Conclusiones"></a>
+
+En esta práctica hemos tenido que trabajar con un conjunto de datos relativamente grande de los cuales hemos tenido que preprocesarlos a ciegas, es decir, no teníamos ninguna información de qué significaba cada variable ni qué representaba el conjunto de datos en general. Esta situación se asemeja a muchos casos de la vida real donde tenemos gran cantidad de variables y el analista de datos no tiene mucha información de qué significa cada una.
+
+Como el conjunto de datos era demasiado grande se han tenido que eliminar tanto filas como columnas(variables). Esto ha permitido aprender a identificar datos que no aportan mucha información pero por otro lado ha interferido en la precisión del modelo de predicción. Sin embargo esta interferencia ha sido casi nula ya que hemos obtenido una precisión del 0.98.
+
+
+
+
+
+## Bibliografía <a name="Bibliografía"></a>
+
+* [1] (https://github.com/jgromero/sige2019)
+* [2] (https://es.wikipedia.org/wiki/Curva_ROC)
+* [3] (https://es.wikipedia.org/wiki/Random_forest)
+* [4] (http://r-statistics.co/Outlier-Treatment-With-R.html)
+* [5] (https://www.r-statistics.com/)
+* [6] (https://topepo.github.io/caret/model-training-and-tuning.html)
+
